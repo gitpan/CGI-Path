@@ -5,9 +5,10 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.06";
+$VERSION = "1.07";
 
 use CGI;
+use Is;
 
 sub new {
   my $type  = shift;
@@ -42,7 +43,7 @@ sub new {
     my_path               => {},
 
     ### 'fake keys', stuff that gets skipped from the session
-    not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated _submit)],
+    not_a_real_key        => [qw(_begin_time _http_referer _printed_pages _session_id _submit _validated)],
 
     ### sort of a linked list of the path
     path_hash             => {
@@ -308,7 +309,7 @@ sub new_helper {
   if($ENV{HTTP_REFERER} && $ENV{SCRIPT_NAME}
   && $ENV{HTTP_REFERER} !~ $ENV{SCRIPT_NAME}) {
     $self->session({
-      http_referer => $ENV{HTTP_REFERER},
+      _http_referer => $ENV{HTTP_REFERER},
     });
   }
 }
@@ -320,7 +321,6 @@ sub delete_session {
 
 sub session_wipe {
   my $self = shift;
-  my $no_error = shift;
   $self->delete_cookie($self->sid_cookie_name);
   $self->delete_session;
   if(keys %{$self->this_form}) {
@@ -437,8 +437,9 @@ sub history_window_name {
 sub show_history {
   my $self = shift;
   return unless($self->allow_history);
-  $self->content_type;
+  $self->my_content_type;
   my $window_name = $self->history_window_name;
+  $window_name =~ s/\W//g;
   my $out = $self->out('history.tt', {
     history => $self->{history}
   });
@@ -447,9 +448,11 @@ sub show_history {
   print <<SCRIPT;
 <SCRIPT>
 var w=window.open('', '$window_name', '');
-w.document.open();
-w.document.write("$$out");
-w.document.close();
+if(w) {
+  w.document.open();
+  w.document.write("$$out");
+  w.document.close();
+}
 </SCRIPT>
 SCRIPT
 }
@@ -571,7 +574,7 @@ sub navigate {
       $self->hook_history_add({
         hook   => 'info_exists',
         could  => 'Y',
-        return => $info_exists,
+        return => join(", ", @{$self->{_extant_info}}),
       });
 
       $validated = $self->validate($step);
@@ -615,21 +618,19 @@ sub navigate {
 
       }
 
-      if($info_exists) {
+      $self->add_to_fill($self->form, 'smart_merge');
+      $self->hook_history_add({
+        hook   => 'add_to_fill',
+        could  => 'Y',
+        return => $self->form,
+      });
 
-        $self->add_to_fill($self->form, 'smart_merge');
-        $self->hook_history_add({
-          hook   => 'add_to_fill',
-          could  => 'Y',
-          return => $self->form,
-        });
-
-      } else {
+      if(!$info_exists || $self->{magic_fill_regardless}) {
 
         if($self->allow_magic_fill) {
           my $magic_fill_ref = $self->magic_fill_ref;
           if(scalar keys %{$magic_fill_ref}) {
-            $self->add_to_fill($magic_fill_ref);
+            $self->add_to_fill($magic_fill_ref, 'smart_merge');
           }
 
           $self->hook_history_add({
@@ -638,12 +639,6 @@ sub navigate {
             return => undef,
           });
 
-        } else {
-          $self->hook_history_add({
-            hook   => 'add_to_fill',
-            could  => 'N',
-            return => undef,
-          });
         }
 
       }
@@ -758,7 +753,7 @@ sub generate_js_validation {
   my $form_name = $self->{form_name} || die "need a form name";
 
   require CGI::Ex::Validate;
-  my $val = CGI::Ex::Validate->new();
+  my $val = CGI::Ex::Validate->new($self->validate_new_hash($val_ref));
   
   ### yes, sort of dumb, but gets rid of variable only used once warning
   $CGI::Ex::Validate::JS_URI_PATH_VALIDATE = $CGI::Ex::Validate::JS_URI_PATH_VALIDATE = "/validate.js";
@@ -777,11 +772,11 @@ sub handle_jump_around {
     if($self->fresh_form_info_exists($step)) {
       my $save_validated = delete $self->form->{_validated}{$step};
 
-      foreach my $page_to_come (@{$self->pages_after_page($step)}) {
+      foreach my $page_to_check ($step, @{$self->pages_after_page($step)}) {
 
-        if($self->page_has_displayed($page_to_come)) {
+        if($self->page_has_displayed($page_to_check)) {
           my $cleared = 0;
-          my $val_hash = $self->get_validate_ref($page_to_come);
+          my $val_hash = $self->get_validate_ref($page_to_check);
 
           foreach my $val_key (keys %{$val_hash}) {
             next unless($val_hash->{$val_key} && ref $val_hash->{$val_key} && ref $val_hash->{$val_key} eq 'HASH');
@@ -792,13 +787,16 @@ sub handle_jump_around {
           }
 
           if($cleared) {
-            $save_validated .= delete $self->form->{_validated}{$page_to_come};
+            $save_validated .= delete $self->form->{_validated}{$page_to_check};
             ### need to make it look like these pages never got printed
             for(my $i=(scalar @{$self->form->{_printed_pages}}) - 1;$i>=0;$i--) {
-              if($self->form->{_printed_pages}[$i] eq $page_to_come) {
+              if($self->form->{_printed_pages}[$i] eq $page_to_check) {
                 splice @{$self->form->{_printed_pages}}, $i, 1;
               }
             }
+            $self->session({
+              _printed_pages => $self->form->{_printed_pages},
+            });
           }
         }
       }
@@ -856,22 +854,12 @@ sub handle_unvalidated_keys {
     foreach(keys %{$unvalidated_keys}) {
       if($val_hash->{$_} && $unvalidated_keys->{$_} && $form->{$_} && !$val_hash->{$_ . "_error"}) {
         $to_save->{$_} = $form->{$_};
+        delete $unvalidated_keys->{$_};
       }
     }
     if(keys %$to_save) {
-      $self->validate_unvalidated_keys($to_save);
       $self->session($to_save);
     }
-  }
-}
-
-sub validate_unvalidated_keys {
-  my $self = shift;
-  my $validating_keys = shift;
-  my $unvalidated_keys = shift;
-
-  foreach(@{$validating_keys}) {
-    delete $unvalidated_keys->{$_};
   }
 }
 
@@ -1015,18 +1003,19 @@ sub info_exists {
   my $val_ref = $self->get_validate_ref($step);
 
   my $return = 0;
-  #If the validate_ref default to true
+  ### default to info exists on an empty val_ref
   unless($self->non_empty_ref($val_ref)) {
     $return = 1;
   }
   
+  $self->{_extant_info} = [];
   my $validating_keys = $self->get_validating_keys($val_ref);
   #if there exists one key in the form that matches
   #one key in the validate_ref return true
   foreach(@{$validating_keys}) {
     if(exists $form->{$_}) {
       $return = 1;
-      last;
+      push @{$self->{_extant_info}}, $_;
     } 
   }
   return $return;
@@ -1044,7 +1033,7 @@ sub get_validating_keys {
 sub page_has_displayed {
   my $self = shift;
   my $page = shift;
-  return (grep /^$page$/, @{$self->form->{_printed_pages}});
+  return (grep $_ eq $page, @{$self->form->{_printed_pages}});
 }
 
 sub page_was_just_printed {
@@ -1082,7 +1071,19 @@ sub validate {
 
   my $method_pre_val = "$self->{this_step}{this_step}_pre_validate";
   if($self->can($method_pre_val)) {
-    $return = $self->$method_pre_val($show_errors) && $return;
+    my $pre_val_return = $self->$method_pre_val($show_errors);
+    $self->hook_history_add({
+      hook   => 'pre_val',
+      could  => 'Y',
+      return => $pre_val_return,
+    });
+    $return = $pre_val_return && $return;
+  } else {
+    $self->hook_history_add({
+      hook   => 'pre_val',
+      could  => 'N',
+      return => '',
+    });
   }
 
   if($validated->{$this_step}) {
@@ -1090,7 +1091,16 @@ sub validate {
 
   } else {
 
-    if($self->validate_proper($self->form, $self->{this_step}{validate_ref})) {
+    ### validate_proper returns the number of errors it found
+    ### so, 0 means success
+    my $validate_proper_return = $self->validate_proper($self->form, $self->{this_step}{validate_ref}, $show_errors);
+    $self->hook_history_add({
+      hook   => 'validate_proper',
+      could  => 'Y',
+      return => $validate_proper_return,
+    });
+
+    if($validate_proper_return) {
 
       $return = 0;
 
@@ -1101,8 +1111,6 @@ sub validate {
         _validated => $validated,
       };
 
-      $self->validate_unvalidated_keys($self->get_validating_keys($self->{this_step}{validate_ref}));
-
       $self->form->{_validated} = $validated;
       # going to save the keys that have been validated to the session
       foreach my $key (@{$self->get_validating_keys($self->{this_step}{validate_ref})}) {
@@ -1111,10 +1119,19 @@ sub validate {
       $self->session($validated_hash);
     }
   }
-  my $method_post_val = "$self->{this_step}{this_step}_post_validate";
-  if($self->can($method_post_val)) {
-    $return = $self->$method_post_val($show_errors) && $return;
+  if($return) {
+    my $method_post_val = "$self->{this_step}{this_step}_post_validate";
+    if($self->can($method_post_val)) {
+      my $post_val_return = $self->$method_post_val($show_errors);
+      $self->hook_history_add({
+        hook   => 'post_val',
+        could  => 'Y',
+        return => $post_val_return,
+      });
+      $return = $post_val_return && $return;
+    }
   }
+
   if(!$return) {
     my $change = '';
     foreach my $check_page ($this_step, @{$self->pages_after_page($this_step)}) {
@@ -1129,19 +1146,26 @@ sub validate {
   return $return;
 }
 
+sub validate_new_hash {
+  return {};
+}
+
 sub validate_proper {
   my $self = shift;
   my $form = shift;
   my $val_ref = shift;
+  my $show_errors = shift;
+
   require CGI::Ex::Validate;
-  my $errobj = CGI::Ex::Validate->new({
-    as_hash_join   => "<BR>\n",
-    required_error => '[% $field_required_error %]',
-  })->validate($form, $val_ref);
+  my $errobj = CGI::Ex::Validate->new($self->validate_new_hash($val_ref))->validate($form, $val_ref);
   my $return = 0;
   if($errobj) {
     my $error_hash = $errobj->as_hash;
-    $return = $self->add_my_error($error_hash);
+    if($show_errors) {
+      $return = $self->add_my_error($error_hash);
+    } else {
+      $return = scalar keys %{$error_hash};
+    }
   }
   return $return;
 }
@@ -1167,9 +1191,8 @@ sub clear_value {
   my $name = shift;
 
   delete $self->form->{$name};
-  delete $self->session->{form}{$name};
   delete $self->fill->{$name};
-  $self->save_value($name => undef);
+  delete $self->session->{$name};
 }
 
 sub add_my_error {
@@ -1252,7 +1275,7 @@ sub print {
   }
 
   $self->record_page_print;
-  $self->content_type;
+  $self->my_content_type;
   print $out ? $out : ${$self->out($step, $self->uber_form(\@_))};
 }
 
@@ -1376,7 +1399,8 @@ sub step_with_extension {
   my $self = shift;
   my $step = shift;
   my $extension_type = shift;
-  return "$step." . $self->{"${extension_type}_extension"};
+  my $extension = $self->{"${extension_type}_extension"};
+  return ($step =~ /\.$extension$/) ? $step : "$step.$extension";
 }
 
 sub template {
@@ -1513,7 +1537,7 @@ sub URLEncode {
   return $return ? $$ref : '';
 }
 
-sub content_type {
+sub my_content_type {
   unless($ENV{CONTENT_TYPED}) {
     print "Content-type: text/html\n\n";
     $ENV{CONTENT_TYPED} = 1;
@@ -1770,7 +1794,7 @@ Here is a listing of some keys in the object, listed with default values.
   keep_no_form_session  => 0,
 
   ### 'fake keys', stuff that gets skipped from the session
-  not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated)],
+  not_a_real_key        => [qw(_begin_time _http_referer _printed_pages _session_id _submit _validated)],
 
   ### sort of a linked list of the path
   path_hash             => {

@@ -1,5 +1,17 @@
 Revision history for Perl extension CGI-Path.
 
+1.07  Mon Feb 09 14:24:00 2004
+  - trying to show history only if the browser supports document.open
+  - changing to my_content_type to avoid renaming warnings
+  - adding magic_fill_regardless
+  - adding validate_new_hash method
+  - also checking $step on jump around stuff
+  - saving _printed_pages when it gets wiped
+  - pushing $_ onto the _extant_info stuff
+  - adding pre_val to the history even if the method wasn't called
+  - accounting for $show_errors in validate_proper
+  - only doing the post_val call if validation up to that point has passed
+  - using delete on session stuff instead of setting = to undef
 1.06  Tue Jan 27 12:41:00 2004
   - getting handle_unvalidated_keys working
   - adding a handle_unvalidated_keys and handle_jump_around to the perldoc
