@@ -5,33 +5,35 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.01";
+$VERSION = "1.02";
 
 use CGI;
 
 sub new {
   my $type  = shift;
   my %DEFAULT_ARGS = (
+    allow_history         => 0,
+    #magic_fill_hash      => {},
+    form_name             => 'MYFORM',
     form_delete_pre_track => [],
+    history_key           => 'history',
     htm_extension         => 'htm',
-    val_extension         => 'val',
     keep_no_form_session  => 0,
     my_form               => {},
     my_path               => {},
     not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated)],
     path_hash             => {
 #      simple example
-#      initial_step       => 'page0',
-#      page0              => 'page1',
+#      initial_step       => 'page1',
 #      page1              => 'page2',
 #      page2              => 'page3',
-#      page3              => 'page4',
-#      page4              => 'page5',
+#      page3              => '',
     },
     perl5lib              => $ENV{PERL5LIB} || '',
     session_only          => ['_validated'],
     session_wins          => [],
     use_session           => 1,
+    val_extension         => 'val',
     validated_fresh       => {},
     WASA                  => [],
   );
@@ -156,7 +158,7 @@ sub morph_path {
 
   # morph to my_module
   if($my_module) {
-    $self->morph($my_module);
+    $self->morph($my_module, 1);
   }
 
 }
@@ -367,20 +369,113 @@ sub form {
   return $self->{form} || {};
 }
 
+sub allow_history {
+  my $self = shift;
+  my $return = 0;
+  if($self->{allow_history} && $self->form->{$self->{history_key}}) {
+    unless($self->session->{$self->{history_key}}) {
+      $self->session({
+        $self->{history_key} => $self->form->{$self->{history_key}},
+      });
+    }
+    $return = 1;
+  }
+  return $return;
+}
+
+sub history_window_name {
+  my $self = shift;
+  return $self->my_content . "_window";
+}
+
+sub show_history {
+  my $self = shift;
+  return unless($self->allow_history);
+  $self->content_type;
+  my $window_name = $self->history_window_name;
+  my $out = $self->out('history.tt', {
+    history => $self->{history}
+  });
+  $$out =~ s@\n@\\n@g;
+  $$out =~ s@(</?sc)(ript>)@$1" + "$2@ig;
+  print <<SCRIPT;
+<SCRIPT>
+var w=window.open('', '$window_name', '');
+w.document.open();
+w.document.write("$$out");
+w.document.close();
+</SCRIPT>
+SCRIPT
+}
+
+sub history_init {
+  my $self = shift;
+  if($self->allow_history) {
+    $self->{history} = [];
+  }
+}
+
+sub hook_history_init {
+  my $self = shift;
+  if($self->allow_history) {
+    $self->{_history} ||= {};
+    $self->{_history}{hook} = [];
+  }
+}
+
+sub add_history_step {
+  my $self = shift;
+  if($self->allow_history) {
+    my $step = shift || die "need a step";
+    $self->{_history}{hash} = {};
+    $self->{_history}{hash}{step} = $step;
+  }
+}
+
+sub history_push {
+  my $self = shift;
+  if($self->allow_history) {
+    push @{$self->{history}}, $self->{_history}{hash};
+    delete $self->{_history};
+  }
+}
+
+sub hook_history_add {
+  my $self = shift;
+  if($self->allow_history) {
+    my $hash = shift || die "need a hook history hash";
+    push @{$self->{_history}{hash}{hook}}, $hash;
+  }
+}
+
+sub magic_fill_hash_interpolation_hash {
+  return {
+    localtime => scalar localtime,
+    time      => time,
+  }
+}
+
 sub navigate {
   my $self = shift;
+
   my $form = $self->form;
   my $path = $self->get_path_array;
+
+  $self->history_init;
 
   $self->get_unvalidated_keys;
   $self->handle_jump_around;
 
   my $previous_step = $form->{_printed_pages} && $form->{_printed_pages}[-1] ? $form->{_printed_pages}[-1] : '';
 
+  $self->can('pre_navigate_walk') && $self->pre_navigate_walk;
+  
   ### foreach path, run the gamut of routines
   my $return_val = undef;
   foreach my $step (@$path){
     
+    $self->add_history_step($step);
+
     return 1 if($self->{stop_navigate});
     $self->morph_step($step);
 
@@ -403,9 +498,28 @@ sub navigate {
     ### a hook beforehand
     if( $self->can($method_pre) ){
       $return_val = $self->$method_pre();
+      $self->hook_history_add({
+        hook   => $method_pre,
+        could  => 'Y',
+        return => $return_val,
+      });
       if($return_val) {
+
+        $self->hook_history_add({
+          hook   => $method_pre,
+          could  => 'Y',
+          return => $return_val,
+        });
+        $self->history_push;
+
         next;
       }
+    } else {
+      $self->hook_history_add({
+        hook   => $method_pre,
+        could  => 'N',
+        return => undef,
+      });
     }
 
     my $validated = 1;
@@ -413,22 +527,132 @@ sub navigate {
 
     if($self->info_exists($step)) {
       $info_exists = 1;
+
+      $self->hook_history_add({
+        hook   => 'info_exists',
+        could  => 'Y',
+        return => $info_exists,
+      });
+
       $validated = $self->validate($step);
+
+      $self->hook_history_add({
+        hook   => 'validate',
+        could  => 'Y',
+        return => $validated,
+      });
+
     } else {
       $info_exists = 0;
+
+      $self->hook_history_add({
+        hook   => 'info_exists',
+        could  => 'Y',
+        return => $info_exists,
+      });
+
     }
 
     ### see if information is complete for this step
     if( ! $info_exists || ! $validated) {
 
       if($self->can($method_fill)) {
-        $self->add_to_fill($self->$method_fill);
+        my $fill_return = $self->add_to_fill($self->$method_fill);
+
+        $self->hook_history_add({
+          hook   => $method_fill,
+          could  => 'Y',
+          return => $fill_return,
+        });
+
+      } else {
+
+        $self->hook_history_add({
+          hook   => $method_fill,
+          could  => 'N',
+          return => undef,
+        });
+
       }
-      unless($self->fill && keys %{$self->fill}) {
+
+      if(!($self->fill && keys %{$self->fill})) {
         $self->add_to_fill($self->form);
+
+        $self->hook_history_add({
+          hook   => 'add_to_fill',
+          could  => 'Y',
+          return => $self->form,
+        });
+
+      } else {
+
+        $self->hook_history_add({
+          hook   => 'add_to_fill',
+          could  => 'N',
+          return => undef,
+        });
+
       }
-      my $hash_form = $self->can($method_form) ? $self->$method_form() : {};
-      my $hash_err  = $self->can($method_err)  ? $self->$method_err()  : {};
+
+      if($self->{magic_fill_hash}) {
+        my $magic_fill_hash_interpolation_hash = $self->magic_fill_hash_interpolation_hash;
+        my $add_to_fill = {};
+        foreach my $key (keys %{$self->{magic_fill_hash}}) {
+          next if(exists $self->fill->{$key});
+          my $value = $self->{magic_fill_hash}{$key};
+          if($value =~ /\[\%/) {
+            my $tmp = '';
+            $self->template->process(\$value, $magic_fill_hash_interpolation_hash, \$tmp);
+            $value = $tmp;
+          }
+          $add_to_fill->{$key} = $value;
+        }
+        if(scalar keys %{$add_to_fill}) {
+          $self->add_to_fill($add_to_fill);
+        }
+      }
+
+      my $hash_form;
+      if($self->can($method_form)) {
+        $hash_form = $self->$method_form();
+
+        $self->hook_history_add({
+          hook   => $method_form,
+          could  => 'Y',
+          return => $hash_form,
+        });
+
+      } else {
+        $hash_form = {};
+
+        $self->hook_history_add({
+          hook   => $method_form,
+          could  => 'N',
+          return => undef,
+        });
+
+      }
+
+      my $hash_err;
+      if($self->can($method_err)) {
+        $hash_err = $self->$method_err();
+
+        $self->hook_history_add({
+          hook   => $method_err,
+          could  => 'Y',
+          return => $hash_err,
+        });
+
+      } else {
+        $hash_err = {};
+
+        $self->hook_history_add({
+          hook   => $method_err,
+          could  => 'N',
+          return => undef,
+        });
+
+      }
 
       my $page_to_print;
       if($self->can($method_step)) {
@@ -439,20 +663,43 @@ sub navigate {
           $page_to_print = $potential_page_to_print 
         }
 
+        $self->hook_history_add({
+          hook   => $method_step,
+          could  => 'Y',
+          return => "$page_to_print ($potential_page_to_print)",
+        });
+
+
+      } else {
+
+        $self->hook_history_add({
+          hook   => $method_step,
+          could  => 'N',
+          return => undef,
+        });
+
       }
 
       $page_to_print ||= $self->my_content . "/$step";
 
       my $val_ref = $self->{this_step}{validate_ref};
-      $self->{my_form}{js_validation} = $self->generate_js_validation($val_ref);
+      $self->{my_form}{js_validation} ||= $self->generate_js_validation($val_ref);
+
+      $self->hook_history_add({
+        hook   => 'print',
+        could  => 'Y',
+        return => "printing $page_to_print",
+      });
+      $self->history_push;
 
       $self->print($page_to_print,
                    $hash_form,
                    $hash_err,
-                   $form,
                    );
       return;
     }
+
+    $self->history_push;
 
     ### a hook after
     if( $self->can($method_post) ){
@@ -470,10 +717,13 @@ sub navigate {
 
 sub generate_js_validation {
   my $self = shift;
-  my $val_ref = shift;
-  require Embperl::Form::Validate;
-  my $epf = new Embperl::Form::Validate($val_ref);
-  return "<SCRIPT>\n" . ($epf->get_script_code) . "</SCRIPT>\n";
+  my $val_ref = shift || die "need a val_ref";
+  my $form_name = $self->{form_name} || die "need a form name";
+  require CGI::Ex::Validate;
+  my $val = CGI::Ex::Validate->new();
+  $CGI::Ex::Validate::JS_URI_PATH_VALIDATE = "/validate.js";
+  $CGI::Ex::Validate::JS_URI_PATH_YAML = "/yaml_load.js";
+  return $val->generate_js($val_ref, $form_name);
 }
 
 sub handle_jump_around {
@@ -611,9 +861,21 @@ sub get_validate_ref {
   my $step_hash = $self->my_path_step($step);
   if($step_hash && $step_hash->{validate_ref}) {
     $return = $step_hash->{validate_ref};
-  } else {
-    $step_hash->{validate_ref} = $return = $self->include_validate_ref($self->my_content . "/$step");
+  } elsif($self->{validate_refs}) {
+
+    ### can break out validate refs by content chunk
+    if($self->{validate_refs}{$self->my_content} && $self->{validate_refs}{$self->my_content}{$step}) {
+      $return = $self->{validate_refs}{$self->my_content}{$step};
+
+    ### or just by step
+    } elsif($self->{validate_refs}{$step}) {
+      $return = $self->{validate_refs}{$step};
+    }
   }
+  unless($return) {
+     $return = $self->include_validate_ref($self->my_content . "/$step");
+  }
+  $step_hash->{validate_ref} = $return;
   return $return;
 }
 
@@ -623,21 +885,36 @@ sub include_validate_ref {
   # step is the full step like path/skel/enter_info
   my $step = shift;
 
-  my $val_filename = $self->get_full_path($self->step_with_extension($step, $self->{val_extension}));
-  return -e $val_filename ? $self->conf_read($val_filename) : [];
+  my $val_filename = $self->get_full_path($self->step_with_extension($step, 'val'));
+  return -e $val_filename ? $self->conf_read($val_filename) : {};
 }
 
 sub conf_read {
   my $self = shift;
   my $filename = shift;
-  require XML::Simple; 
-  my $ref = XML::Simple::XMLin($filename);
+  require YAML;
+  my $ref;
+  eval {
+    $ref = YAML::LoadFile($filename);
+  };
+  if($@) {
+    die "YAML error: $@";
+  }
   return $ref;
+}
+
+sub page_name_helper {
+  my $self = shift;
+  my $base_page = shift || die "need a \$base_page for page_name_helper";
+  $base_page = "content/$base_page" unless($base_page =~ m@^(content|images|template)/@);
+  $base_page .= ".$self->{htm_extension}" unless($base_page =~ /\.\w+$/);
+  return $base_page;
 }
 
 sub get_full_path {
   my $self = shift;
   my $relative_path = shift;
+  $relative_path = $self->page_name_helper($relative_path);
   my $dirs = shift || $self->include_path;
   my $full_path = '';
   foreach my $dir (GET_VALUES($dirs)) {
@@ -712,26 +989,10 @@ sub info_exists {
 sub get_validating_keys {
   my $self = shift;
   my $val_ref = shift;
-  my $val_ref_ref = ref $val_ref;
-  my $validating_keys = [];
-  if($val_ref_ref) {
-    if($val_ref_ref eq 'ARRAY') {
-      foreach my $array_ref (@{$val_ref}) {
-        for(my $i=0;$i<@{$array_ref};$i++) {
-          if($array_ref->[$i] eq '-key' && $array_ref->[$i+1]) {
-            push @{$validating_keys}, $array_ref->[$i+1] unless(grep {$_ eq $array_ref->[$i+1]} @{$validating_keys});
-            last;
-          }
-        }
-      }
-    } else {
-      die "need to validate on non-ARRAY refs";
-    }
-
-
-  }
-  return $validating_keys;
-
+  require CGI::Ex::Validate;
+  my $val = CGI::Ex::Validate->new;
+  my $keys = $val->get_validation_keys($val_ref);
+  return [sort keys %{$keys}];
 }
 
 sub page_has_displayed {
@@ -826,11 +1087,16 @@ sub validate_proper {
   my $self = shift;
   my $form = shift;
   my $val_ref = shift;
-  require Embperl::Form::Validate;
-  my $epf = new Embperl::Form::Validate($val_ref);
-  my $ret = $epf->validate_messages($form);
-  $self->{my_form}{js_validation} = $epf->get_script_code;
-  my $return = $self->add_my_error($ret);
+  require CGI::Ex::Validate;
+  my $errobj = CGI::Ex::Validate->new({
+    as_hash_join   => "<BR>\n",
+    required_error => '[% error.$field_required_error %]',
+  })->validate($form, $val_ref);
+  my $return = 0;
+  if($errobj) {
+    my $error_hash = $errobj->as_hash;
+    $return = $self->add_my_error($error_hash);
+  }
   return $return;
 }
 
@@ -863,15 +1129,21 @@ sub clear_value {
 sub add_my_error {
   my $self = shift;
   my $errors = shift;
-  my $added = 0;
-  $self->{my_form}{error} ||= [];
-  foreach my $error_array (GET_VALUES($errors)) {
-    foreach my $error (GET_VALUES($error_array)) {
-      next unless($error);
-      $added++;
-      push @{$self->{my_form}{error}}, $error;
-    }
+
+  unless(ref $errors && ref $errors eq 'HASH') {
+    die "need to send a hash ref of errors" 
   }
+
+  my $added = 0;
+  $self->{my_form}{error} ||= {};
+
+  foreach my $key (keys %{$errors}) {
+    next unless($errors->{$key});
+    $added++;
+    $self->{my_form}{error}{$key} = $errors->{$key};
+  }
+
+  ### returns how many errors were added
   return $added;
 }
 
@@ -889,6 +1161,17 @@ sub add_to_fill {
   }
 }
 
+sub out {
+  my $self = shift;
+  my $page = shift || die "need a page to \$self->out";
+  my $form = shift || {};
+
+  $page = $self->page_name_helper($page);
+  my $out = $self->process($page, $form);
+  $self->fill_in(\$out);
+  return $out;
+}
+
 sub print {
   my $self = shift;
   my $step = shift;
@@ -896,17 +1179,46 @@ sub print {
   $self->handle_unvalidated_keys;
 
 
-  if (!-e $self->get_full_path($self->step_with_extension($step, $self->{htm_extension}))) {
-    die "couldn't find content for page: $step";
-    #$self->create_page($step);
+  my $out;
+
+  if($self->{htm} && $self->{htm}{$step}) {
+    my $content = $self->{htm}{$step};
+    $self->template->process(\$content, $self->uber_form, \$out) || die $self->template->error;
+    $self->fill_in(\$out);
+
+  } elsif (!-e $self->get_full_path($self->step_with_extension($step, 'htm'))) {
+    $out = $self->create_page($step);
+    die "couldn't find content for page: $step" unless($out);
+    $self->fill_in(\$out);
   }
 
   $self->record_page_print;
-  $self->process($self->step_with_extension($step, $self->{htm_extension}));
+  $self->content_type;
+  print $out ? $out : ${$self->out($step, $self->uber_form(\@_))};
+}
+
+sub fill_in {
+  my $self = shift;
+  my $content = shift;
+  die "need a scalar ref for \$content" unless($content && ref $content && ref $content eq 'SCALAR');
+  my $hashref = shift || $self->fill;
+  require CGI::Ex;
+  my $cgix = CGI::Ex->new;
+  $cgix->fill({text => $content, form => $hashref});
 }
 
 sub uber_form {
   my $self = shift;
+  my $others = shift || [];
+
+  foreach my $hash (@{$others}) {
+    next unless($hash && ref $hash && ref $hash eq 'HASH');
+    foreach (keys %{$hash}) {
+      next if(/^_/);
+      $self->{uber_form}{$_} = $hash->{$_};
+    }
+  }
+
   $self->{uber_form} ||= {};
   $self->{uber_form}{fill} ||= {};
   foreach (keys %{$self->form}) {
@@ -926,18 +1238,19 @@ sub uber_form {
 
 sub process {
   my $self = shift;
-  my $step_filename = shift;
-  $self->content_type;
-  $self->template->process($step_filename, $self->uber_form
-    #O::FORMS::get_required_hash($self->{this_step}{validate_ref}),
-    #$self->{this_step}{validate_errors},
-    #$self->{my_form},
-    #$self->{form},
-    #{
-    #  more_content => $self->{this_step}{more_content},
-    #  prev_step    => $self->{this_step}{previous_step},
-    #},
-  ) || die $self->template->error();
+  my $step_filename = shift || die "need a \$step_filename to \$self->process";
+  my $form = shift || {};
+  my $out = shift;
+
+  unless(defined $out) {
+    my $scalar = '';
+    $out = \$scalar;
+  }
+
+  $self->template->process($step_filename, $form, $out) || die $self->template->error();
+  #my $return = '';
+  #$self->template->process($out, $form, \$return) || die $self->template->error();
+  return ref $out ? $out : \$out;
 }
 
 sub step_with_extension {
@@ -983,49 +1296,75 @@ sub record_page_print {
 }
 
 # This subroutine will generate a generic HTML page 
-# with form fields for the required fields based on the .val file
+# with form fields for the required fields based on the validate file
 sub create_page {
   my $self = shift;
   my $step = shift;
 
+  my $form_name = $self->{form_name} || die "need a form name";
+
+  $self->{create_page} ||= {};
+  my $interpolate_hash = {
+    full_step => $self->my_content . "/" . $self->{this_step}{this_step},
+    form_name => $form_name,
+  };
+  $self->{create_page}{header} ||= <<HEADER;
+<!-- this step nicely created: [% full_step %]-->
+<HTML>
+<HEAD>
+<TITLE> created step: [% full_step %]</TITLE>
+</HEAD>
+<BODY>
+HEADER
+
   my $validate_ref = $self->get_validate_ref($self->{this_step}{this_step});
-  my $content  = '[var text "content:path/signup/signup.txt"]';
-  $content .= "<!-- this step nicely created: " . $self->my_content . "/" . $self->{this_step}{this_step} . " -->\n";
-  $content .= '<HTML>';
-  $content .= '<HEAD>';
-  $content .= '<TITLE> created step: '. $self->my_content;
-  $content .= '/' . $self->{this_step}{this_step} .'</TITLE>';
-  $content .= "</HEAD>\n";
-  $content .= "<BODY>\n";
-  $content .= "[form.js]\n";
-  $content .= "[forms.path_form]\n";
+  die "couldn't get validate_ref to create_page with" unless($validate_ref);
 
-  $content .= "<CENTER>\n";
-  $content .= "[form.more_content]\n";
-  $content .= "<TABLE>\n";
-  for my $name ( $self->get_validating_keys($validate_ref)) {
-    $content .= '<TR><TD align="right">';
-    $content .= $name;
-    $content .= '</TD><TD>';
-    $content .= "<INPUT TYPE='TEXT' NAME='$name' />";
-    $content .= "[form.$name"."_required]";
-    $content .= "[|| form.$name"."_error env.blank]";
-    $content .= "<BR>\n";
-    $content .= "</TD></TR>\n";
+  $interpolate_hash->{validating_keys} = [];
+  for my $name ( @{$self->get_validating_keys($validate_ref)}) {
+    my $hash = {
+      name => $name,
+    };
+    push @{$interpolate_hash->{validating_keys}}, $hash;
+    #$content .= "[form.$name"."_required]";
+    #$content .= "[|| form.$name"."_error env.blank]";
   }
-  $content .= '<TR><TD colspan="2" align="right">';
-  unless($self->{this_step}{this_step} eq $self->{path_array}[0]) {
-    $content .= "[button.path_back]\n";
-  }
-  $content .= '<INPUT TYPE="SUBMIT" NAME="NEXT" VALUE="NEXT"/>';
-  $content .= "</TD></TR>\n";
-  $content .= '</TABLE>';
-  $content .= '</CENTER>';
-  $content .= "</FORM>\n";
-  $content .= '</BODY>';
-  $content .= '</HTML>';
 
-  return $content;
+  $self->{create_page}{js} ||= $self->generate_js_validation($validate_ref);
+  $self->{create_page}{table_open} ||= "<TABLE>";
+  $ENV{SCRIPT_NAME} ||= '';
+  $ENV{PATH_INFO}   ||= '';
+  $self->{create_page}{form_open} ||= "<FORM METHOD=post NAME='[% form_name %]' ACTION='$ENV{SCRIPT_NAME}$ENV{PATH_INFO}'>";
+  $self->{create_page}{form} ||= <<FORM;
+[% FOREACH hash = validating_keys %]
+  <TR>
+    <TD align=right>[% hash.name %]</TD>
+    <TD><INPUT NAME='[% hash.name %]'></TD>
+  </TR>
+[% END %]
+  <TR><TD><INPUT TYPE=submit NAME=next VALUE=next></TD></TR>
+FORM
+  $self->{create_page}{form_close} ||= "</FORM>";
+  $self->{create_page}{table_close} ||= "</TABLE>";
+  $self->{create_page}{footer} ||= <<FOOTER;
+</BODY>
+</HTML>
+FOOTER
+
+  my $content = <<CONTENT;
+$self->{create_page}{header}
+$self->{create_page}{form_open}
+$self->{create_page}{table_open}
+$self->{create_page}{form}
+$self->{create_page}{table_close}
+$self->{create_page}{form_close}
+$self->{create_page}{footer}
+$self->{create_page}{js}
+CONTENT
+
+  my $return = '';
+  $self->template->process(\$content, $interpolate_hash, \$return);
+  return $return;
 }
 
 
@@ -1058,6 +1397,7 @@ sub URLEncode {
 sub content_type {
   unless($ENV{CONTENT_TYPED}) {
     print "Content-type: text/html\n\n";
+    $ENV{CONTENT_TYPED} = 1;
   }
 }
 

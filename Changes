@@ -1,5 +1,7 @@
 Revision history for Perl extension CGI-Path.
 
+1.02  Tue Dec 16 13:00:00 2003
+  - better create page functionality, allow for htm and val in object, CGI::Ex integration
 1.01  Wed Oct 22 10:54:50 2003
   - changing a couple methods to reasonable defaults
 1.00  Mon Oct 20 17:14:39 2003
