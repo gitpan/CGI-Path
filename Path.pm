@@ -5,7 +5,7 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.00";
+$VERSION = "1.01";
 
 use CGI;
 
@@ -15,7 +15,7 @@ sub new {
     form_delete_pre_track => [],
     htm_extension         => 'htm',
     val_extension         => 'val',
-    keep_no_form_session  => 1,
+    keep_no_form_session  => 0,
     my_form               => {},
     my_path               => {},
     not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated)],
@@ -53,11 +53,11 @@ sub new {
 }
 
 sub session_dir {
-  die "please write your own session_dir method";
+  return '/tmp/path/session';
 }
 
 sub session_lock_dir {
-  die "please write your own session_lock_dir method";
+  return '/tmp/path/session/lock';
 }
 
 sub cookies {
@@ -236,7 +236,7 @@ sub base_include_path {
 
 sub include_path {
   my $self = shift;
-  return [$self->base_include_path . "/gs", $self->base_include_path . "/default.partner"];
+  return [$self->base_include_path . "/default"];
 }
 
 sub my_content {
@@ -927,6 +927,7 @@ sub uber_form {
 sub process {
   my $self = shift;
   my $step_filename = shift;
+  $self->content_type;
   $self->template->process($step_filename, $self->uber_form
     #O::FORMS::get_required_hash($self->{this_step}{validate_ref}),
     #$self->{this_step}{validate_errors},
@@ -1052,6 +1053,12 @@ sub URLEncode {
   }
 
   return $return ? $$ref : '';
+}
+
+sub content_type {
+  unless($ENV{CONTENT_TYPED}) {
+    print "Content-type: text/html\n\n";
+  }
 }
 
 sub location_bounce {
@@ -1207,5 +1214,12 @@ $self->{session_wins} = [] - this_form wins by default, set this if you want som
 The code then sets the form with the following line
 
 $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
+
+=head1 Session management
+
+CGI::Path uses Apache::Session::File by default for session management.  If you use this default you will need to write the following methods
+
+session_dir      - returns the directory where the session files will go
+session_lock_dir - returns the directory where the session lock files will go
 
 =cut
