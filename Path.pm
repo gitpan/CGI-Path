@@ -5,27 +5,46 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.04";
+$VERSION = "1.05";
 
 use CGI;
 
 sub new {
   my $type  = shift;
   my %DEFAULT_ARGS = (
+    ### turn on keeping history, $self->form->{$self->{history_key}} also needs to be true
     allow_history         => 0,
+    ### history_key is the key from the form to turn on history
+    history_key           => 'history',
 
+    ### turn on magic fill
     allow_magic_fill      => 0,
+    ### turn on micro seconds, which requires Time::HiRes
     allow_magic_micro     => 0,
+    ### full path to the magic_fill file
     magic_fill_filename   => '',
 
+    ### if a given page doesn't exist, create it using create_page method
+    create_page           => 0,
+
+    ### form_name is used for javascript
     form_name             => 'MYFORM',
-    form_delete_pre_track => [],
-    history_key           => 'history',
+
+    ### extension for htm files
     htm_extension         => 'htm',
+    ### extension for validation files 
+    val_extension         => 'val',
+
+    ### if the user submits an empty form, keep the session
     keep_no_form_session  => 0,
+
     my_form               => {},
     my_path               => {},
+
+    ### 'fake keys', stuff that gets skipped from the session
     not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated)],
+
+    ### sort of a linked list of the path
     path_hash             => {
 #      simple example
 #      initial_step       => 'page1',
@@ -33,12 +52,21 @@ sub new {
 #      page2              => 'page3',
 #      page3              => '',
     },
+
+    ### used for requiring in files
     perl5lib              => $ENV{PERL5LIB} || '',
+
+    ### only get these values from the session
     session_only          => ['_validated'],
+    ### if these values are in the session and form, the session wins
     session_wins          => [],
+    ### sometimes you might not want to use a session
     use_session           => 1,
-    val_extension         => 'val',
+
+    ### what got validated on this request
     validated_fresh       => {},
+
+    ### a history of bless'ings
     WASA                  => [],
   );
   my $self = bless \%DEFAULT_ARGS, $type;
@@ -385,6 +413,8 @@ sub form {
   return $self->{form} || {};
 }
 
+### history methods
+
 sub allow_history {
   my $self = shift;
   my $return = 0;
@@ -464,6 +494,8 @@ sub hook_history_add {
   }
 }
 
+### where lots of the magic happens
+
 sub navigate {
   my $self = shift;
 
@@ -512,7 +544,7 @@ sub navigate {
         could  => 'Y',
         return => $return_val,
       });
-      if($return_val) {
+      unless($return_val) {
 
         $self->hook_history_add({
           hook   => $method_pre,
@@ -722,12 +754,17 @@ sub navigate {
 
 sub generate_js_validation {
   my $self = shift;
+
   my $val_ref = shift || die "need a val_ref";
   my $form_name = $self->{form_name} || die "need a form name";
+
   require CGI::Ex::Validate;
   my $val = CGI::Ex::Validate->new();
-  $CGI::Ex::Validate::JS_URI_PATH_VALIDATE = "/validate.js";
-  $CGI::Ex::Validate::JS_URI_PATH_YAML = "/yaml_load.js";
+  
+  ### yes, sort of dumb, but gets rid of variable only used once warning
+  $CGI::Ex::Validate::JS_URI_PATH_VALIDATE = $CGI::Ex::Validate::JS_URI_PATH_VALIDATE = "/validate.js";
+  $CGI::Ex::Validate::JS_URI_PATH_YAML     = $CGI::Ex::Validate::JS_URI_PATH_YAML     = "/yaml_load.js";
+
   return $val->generate_js($val_ref, $form_name);
 }
 
@@ -1518,8 +1555,8 @@ your $ENV{PERL5LIB}.
 =head1 path_hash
 
 The path_hash is what helps generate the path_array, which is just an array of steps.  It is a hash to 
-allow for easy overrides, since it is sort
-of hard to override the third element of an array through a series of news.
+allow for easy overrides, since it is sort of hard to override just the third element of an array 
+through a simple new.
 
 The path_hash needs a key named 'initial_step', and then steps that point down the line, like so
 
@@ -1531,6 +1568,234 @@ The path_hash needs a key named 'initial_step', and then steps that point down t
 
 since page_three doesn't point anywhere, the path_array ends.  You can just override $self->path_hash,
 and have it return a hash ref as above.
+
+=head1 path_array
+
+The path_array is formed from path_hash.  It is an array ref of the steps in the path.
+
+=head1 my_module
+
+my_module by default is something like CGI::Path::Skel.  You can override $self->my_module and have it
+return a scalar containing your my_module.  Module overrides are done based on my_module.
+
+=head1 my_content
+
+my_module by default is something like path/skel.  It defaults to a variant of my_module.  You can
+override $self->my_content and have it return a scalar your my_content.  html content gets printed based
+on my_content.
+
+=head1 include_path
+
+include_path is a method that returns the include_path to look through for files.  I suggest returning an
+array ref, even if it only contains one element.
+
+=head1 navigate
+
+$self->navigate walks through a path of steps, where each step corresponds to a .htm content
+file and a .val validation hash.
+
+A step corresponds to a .htm content file.  The .htm and .val need to share the base same name.
+
+$self->{this_step} is hash ref containing the following
+
+  previous_step => the last step
+  this_step     => the current step
+  validate_ref  => the validation ref for the current step
+
+Generally, navigate generates the form (see below), and for each step does the following
+
+  --  Get the validate ref (val_ref) for the given page
+  --  Comparing the val_ref to the form see if info exists for the step
+  --  Validate according to the val_ref
+  --  If validation fails, or if info doesn't exist, process the page and stop
+
+More specifically, the following methods can be called for a step, in the given order.
+
+step                    details/possible uses
+---------------------------------------------
+  ${step}_hook_pre        initializations, must return 1 
+                          or step gets skipped
+  info_exists             checks to see if you have info 
+                          for this step
+  ${step}_info_complete   can be used to make sure you 
+                          have all the info you need
+
+  validate                contains the following
+  ${step}_pre_validate    stuff to check before validate proper
+  validate_proper         runs the .val file validation
+  ${step}_post_validate   stuff to run after validate proper
+
+  ${step}_hash_fill       return a hash ref of things to add to $self->fill
+                          fill is a hash ref of what fills the forms
+  ${step}_hash_form       perhaps set stuff for $self->{my_form}
+                          my_form is a hash ref that gets passed to the process method
+  ${step}_hash_errors     set errors
+  ${step}_step            do actual stuff for the step
+  ${step}_hook_post       last chance
+
+=head1 VALIDATION
+
+The three validation methods mentioned above in navigate (pre, proper, post) handle validation.  The pre and post
+methods are hooks so you could do whatever custom validation you like.  By default, validate_proper is handled by
+CGI::Ex::Validate.  See the L<CGI::Ex::Validate> for details.  If any of the three methods find validation errors
+ for a given page, that page is displayed.  If the page was immediately shown before, errors are passed to the page.
+
+=head1 .val files
+By default, .val files are turned into refs by YAML.  See the L<YAML> for details.  This could easily be changed by 
+writing your own conf_read method, which takes the full path to a file and returns a ref.  The ref that gets returned
+ needs to nicely match the structure required by validate_proper.
+
+=head1 JAVASCRIPT VALIDATION
+
+Javascript validation is generated by generate_js_validation based on the .val ref.  generate_js_validation uses
+CGI::Ex::Validate by default.  See the L<CGI::Ex::Validate> for details.  You need to put a js_validation tag on 
+your page to get the validation.  The form name is MYFORM by default, but can be changed by setting $self->{form_name}.
+
+=head1 generate_form
+
+The goal is that the programmer just look at $self->form for form or session information.  
+To help facilitate this goal, I use the following
+
+  $self->this_form           - form from the current hit
+  $self->{session_only} = [] - things that get deleted from this_form and get inserted from the session
+  $self->{session_wins} = [] - this_form wins by default, set this if you want something just from the session
+
+The code then sets the form with the following line
+
+  $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
+
+=head1 Session management
+
+CGI::Path uses Apache::Session::File by default for session management.  If you use this default you will need to write the following methods
+
+  session_dir      - returns the directory where the session files will go
+  session_lock_dir - returns the directory where the session lock files will go
+
+One failing of Apache::Session::File is it not working so hot over NFS.  Sorry, patches were not readily accepted.
+
+=head1 magic_fill
+
+magic_fill is written to help aid in rapid development.  It is a simple, space-delimited file of key/value pairs, like so
+
+  address                       123 Fake Street
+  email,email_address,from      cpan@spack.net
+
+I split on the first white space, then split on commas for the key names.  In the above example, I would end up with a ref like this
+
+  {
+    address       => '123 Fake Street',
+    email         => 'cpan@spack.net',
+    email_address => 'cpan@spack.net',
+    from          => 'cpan@spack.net',
+  }
+
+Once I have a ref, those values will get filled into forms as pages are displayed.  Makes it nice to fill forms with dummy data and test the
+flow of your script.
+
+magic_fill is turned off by default.  The method allow_magic_fill determines if magic_fill is on.  By default, allow_magic_fill just looks at
+$self->{allow_magic_fill} and returns true or false accordingly.  magic_fill_filename points to the location of your file.
+
+When you new up your CGI::Path object you just need to do something like the following
+
+my $self = CGI::Path->new({
+  allow_magic_fill      => 1,
+  magic_fill_filename   => "/path/to/magic_fill_file",
+});
+
+You can use variable values using the magic_fill_interpolation_hash.  By default, you can use Template::Toolkit tags, like so
+
+currenttime            [% localtime %]
+
+Currently, the following are included by default in the magic_fill_interpolation_hash
+
+  script    - a good guess at the name of your script
+  _script   - the stuff after the last _ in the above script
+  localtime - scalar (localtime),
+  time      - time,
+
+I also include %ENV
+
+Two other keys are not available by default, based on micro seconds namely
+
+  micro      - join(".", &Time::HiRes::gettimeofday()), which really tries to get you a unique value
+  micro_part - (&Time::HiRes::gettimeofday())[1];, which is just the micro seconds
+
+To make these swaps available you need to set $self->{allow_magic_micro} to a true value.
+
+=head1 allow_history
+
+At least partly due to the sometimes complicated nature of paths, I have found it difficult to debug what is 
+actually going on during navigation.  The history features of CGI::Path aim to try and make things a little 
+easier to follow.  The goal is for each step to get added to the history and get spit out to a popup window,
+showing in hopefully easy to read fashion, what happened that led to the step being printed.
+
+To turn on the history features, the allow_history method needs to return true.  The default method checks to see
+that both $self->{allow_history} and $self->form->{$self->{history_key}} are true.  The default history_key is named
+history.   When CGI::Path finds that history is allowed $self->{history_key} gets saved to the session, which means
+the history window will pop up for each step so long as you stay in the session, and don't stop allowing history.
+
+This is a rather new feature and I have now likely missed adding history to a few steps.  Please let me know where
+other history might be useful.
+
+=head1 OBJECT KEYS
+
+Here is a listing of some keys in the object, listed with default values.
+
+  ### turn on keeping history, $self->form->{$self->{history_key}} also needs to be true
+  allow_history         => 0,
+  ### history_key is the key from the form to turn on history
+  history_key           => 'history',
+
+  ### turn on magic fill
+  allow_magic_fill      => 0,
+  ### turn on micro seconds, which requires Time::HiRes
+  allow_magic_micro     => 0,
+  ### full path to the magic_fill file
+  magic_fill_filename   => '',
+
+  ### if a given page doesn't exist, create it using create_page method
+  create_page           => 0,
+
+  ### form_name is used for javascript
+  form_name             => 'MYFORM',
+
+  ### extension for htm files
+  htm_extension         => 'htm',
+  ### extension for validation files 
+  val_extension         => 'val',
+
+  ### if the user submits an empty form, keep the session
+  keep_no_form_session  => 0,
+
+  ### 'fake keys', stuff that gets skipped from the session
+  not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated)],
+
+  ### sort of a linked list of the path
+  path_hash             => {
+#      simple example
+#      initial_step       => 'page1',
+#      page1              => 'page2',
+#      page2              => 'page3',
+#      page3              => '',
+  },
+
+  ### used for requiring in files
+  perl5lib              => $ENV{PERL5LIB} || '',
+
+  ### only get these values from the session
+  session_only          => ['_validated'],
+  ### if these values are in the session and form, the session wins
+  session_wins          => [],
+  ### sometimes you might not want to use a session
+  use_session           => 1,
+
+  ### what got validated on this request
+  validated_fresh       => {},
+
+  ### a history of bless'ings
+  WASA                  => [],
+
+=head1 MULTIPLE PATHS
 
 It is quite easy to look at $ENV{PATH_INFO} and control multiple paths through a single cgi.  I offer the
 following as a simple example
@@ -1566,131 +1831,23 @@ add_user path, which looked like this
 
 add_user => add_user_confirm => add_user_receipt
 
-=head1 my_module
+=head1 APOLOGIES
 
-my_module by default is something like CGI::Path::Skel.  You can override $self->my_module and have it
-return a scalar containing your my_module.  Module overrides are done based on my_module.
+This system is based on one that has been used to write some rather intense cgis, responsible
+for lots of pressure, traffic and dollars.  That said, CGI::Path is still in sort of alpha stages,
+where I am still trying to get everything in its right place.  That has been harder than I had hoped.
+It is also based heavily on CGI::Ex, also newly open sourced, but based on I feel, steady technology.
+I am hoping to one day soon get a nice, easy to follow example of a three step path that allows a 
+user to enter information, confirm the information and then send an email.  But for now, I am just
+trying to get everything working.  The docs should improve in time.
 
-=head1 my_content
+=head1 VISION
 
-my_module by default is something like path/skel.  It defaults to a variant of my_module.  You can
-override $self->my_content and have it return a scalar your my_content.  html content gets printed based
-on my_content.
-
-=head1 path_array
-
-The path_array is formed from path_hash.  It is an array ref of the steps in the path.
-
-=head1 navigate
-
-$self->navigate walks through a path of steps, where each step corresponds to a .htm content
-file and a .val validation hash.
-
-A step corresponds to a .htm content file.  The .htm and .val need to share the base same name.
-
-$self->{this_step} is hash ref containing the following
-previous_step => the last step
-this_step     => the current step
-validate_ref  => the validation ref for the current step
-
-Generally, navigate generates the form (see below), and for each step does the following
-
---  Get the validate ref (val_ref) for the given page
---  Comparing the val_ref to the form see if info exists for the step
---  Validate according to the val_ref
---  If validation fails, or if info doesn't exist, process the page and stop
-
-More specifically, the following methods can be called for a step, in the given order.
-
-step                    details/possible uses
----------------------------------------------
-  ${step}_hook_pre        initializations, 
-                          must return 0 or step gets skipped
-  info_exists             checks to see if you have info for this step
-  ${step}_info_complete   can be used to make sure you have all the 
-                          info you need
-
-  validate                contains the following
-  ${step}_pre_validate    stuff to check before validate proper
-  validate_proper         runs the .val file validation
-  ${step}_post_validate   stuff to run after validate proper
-
-  ${step}_hash_fill       return a hash ref of things to add to $self->fill
-                          fill is a hash ref of what fills the forms
-  ${step}_hash_form       perhaps set stuff for $self->{my_form}
-                          my_form is a hash ref that gets passed to the process method
-  ${step}_hash_errors     set errors
-  ${step}_step            do actual stuff for the step
-  ${step}_hook_post       last chance
-
-=head1 generate_form
-
-The goal is that the programmer just look at $self->form for form or session information.  
-To help facilitate this goal, I use the following
-
-  $self->this_form           - form from the current hit
-  $self->{session_only} = [] - things that get deleted from this_form and get inserted from the session
-  $self->{session_wins} = [] - this_form wins by default, set this if you want something just from the session
-
-The code then sets the form with the following line
-
-  $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
-
-=head1 magic_fill
-
-magic_fill is written to help aid in rapid development.  It is a simple, space-delimited file of key/value pairs, like so
-
-  address                       123 Fake Street
-  email,email_address,from      cpan@spack.net
-
-I split on the first white space, then split on commas for the key names.  In the above example, I would end up with a ref like this
-
-  {
-    address       => '123 Fake Street',
-    email         => 'cpan@spack.net',
-    email_address => 'cpan@spack.net',
-    from          => 'cpan@spack.net',
-  }
-
-Once I have a ref, those values will get filled into forms as pages are displayed.  Makes it nice to fill forms with dummy data and test the
-flow of your script.
-
-magic_fill is turned off by default.  The method allow_magic_fill determines if magic_fill is on.  By default allow_magic_fill just looks at
-$self->{allow_magic_fill} and returns true or false accordingly.  magic_fill_filename points to the location of your file.
-
-When you new up your CGI::Path object you just need to do something like the following
-
-my $self = CGI::Path->new({
-  allow_magic_fill      => 1,
-  magic_fill_filename   => "/path/to/magic_fill_file",
-});
-
-You can use variable values using the magic_fill_interpolation_hash.  By default you can use Template::Toolkit tags, like so
-
-currenttime            [% localtime %]
-
-Currently, the following are included by default in the magic_fill_interpolation_hash
-
-  script    - a good guess at the name of your script
-  _script   - the stuff after the last _ in the above script
-  localtime - scalar (localtime),
-  time      - time,
-
-I also include %ENV
-
-Two other keys are not available by default, based on micro seconds namely
-
-  micro      - join(".", &Time::HiRes::gettimeofday()), which really tries to get you a unique value
-  micro_part - (&Time::HiRes::gettimeofday())[1];, which is just the micro seconds
-
-To make these swaps available you need to set $self->{allow_magic_micro} to a true value.
-
-=head1 Session management
-
-CGI::Path uses Apache::Session::File by default for session management.  If you use this default you will need to write the following methods
-
-  session_dir      - returns the directory where the session files will go
-  session_lock_dir - returns the directory where the session lock files will go
+Keeping the above APOLOGIES in mind, I think CGI::Path could change how the Perl world writes cgis.  I have
+begun to use it for even doing two page paths.  Not having to worry about navigation, validation and the
+like has been oh so nice.  Once the navigation method is understood, a programmer just ties in where he
+needs to, and writes little else.  The cgi mailer described above would require writing the htm, .val files,
+and the methods to actually send the email.
 
 =head1 AUTHOR
 
@@ -1702,6 +1859,5 @@ Address bug reports and comments to: cpan@spack.net.
 
 When sending bug reports, please provide the version of CGI::Path, the version of Perl, and the name and version of the operating
 system you are using.
-
 
 =cut
