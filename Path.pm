@@ -5,7 +5,7 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.09";
+$VERSION = "1.10";
 
 use CGI;
 
@@ -260,9 +260,10 @@ sub morph {
 
   my $ending_ref = ref $self;
 
-  if($self->can('add_WASA')) {
-    $self->add_WASA($starting_ref);
-    $self->add_WASA($ending_ref);
+  my $sub_ref = $self->can('add_WASA');
+  if($sub_ref) {
+    &$sub_ref($self, $starting_ref);
+    &$sub_ref($self, $ending_ref);
   }
   return $self;
 }
@@ -407,6 +408,10 @@ sub this_form {
   return $self->{this_form} ||= do {
     my $cgi = CGI->new;
     my %form = $cgi->Vars;
+    foreach(keys %form) {
+      next unless($form{$_} =~ /\0/);
+      $form{$_} = [split /\0/, $form{$_}];
+    }
     \%form;
   }
 }
@@ -526,7 +531,10 @@ sub navigate {
 
   my $previous_step = $form->{_printed_pages} && $form->{_printed_pages}[-1] ? $form->{_printed_pages}[-1] : '';
 
-  $self->can('pre_navigate_walk') && $self->pre_navigate_walk;
+  ### sub_ref is where I put references to subroutines that can returned
+  my $sub_ref;
+
+  &$sub_ref($self) if($sub_ref = $self->can('pre_navigate_walk'));
   
   ### foreach path, run the gamut of routines
   my $return_val = undef;
@@ -554,8 +562,8 @@ sub navigate {
   #     method_val gets called in $self->validate
 
     ### a hook beforehand
-    if( $self->can($method_pre) ){
-      $return_val = $self->$method_pre();
+    if($sub_ref = $self->can($method_pre)){
+      $return_val = &$sub_ref($self);
       $self->hook_history_add({
         hook   => $method_pre,
         could  => 'Y',
@@ -614,8 +622,8 @@ sub navigate {
     ### see if information is complete for this step
     if( ! $info_exists || ! $validated) {
 
-      if($self->can($method_fill)) {
-        my $fill_return = $self->add_to_fill($self->$method_fill);
+      if($sub_ref = $self->can($method_fill)) {
+        my $fill_return = $self->add_to_fill(&$sub_ref($self));
 
         $self->hook_history_add({
           hook   => $method_fill,
@@ -659,8 +667,8 @@ sub navigate {
       }
 
       my $hash_form;
-      if($self->can($method_form)) {
-        $hash_form = $self->$method_form();
+      if($sub_ref = $self->can($method_form)) {
+        $hash_form = &$sub_ref($self);
 
         $self->hook_history_add({
           hook   => $method_form,
@@ -680,8 +688,8 @@ sub navigate {
       }
 
       my $hash_err;
-      if($self->can($method_err)) {
-        $hash_err = $self->$method_err();
+      if($sub_ref = $self->can($method_err)) {
+        $hash_err = &$sub_ref($self);
 
         $self->hook_history_add({
           hook   => $method_err,
@@ -701,8 +709,8 @@ sub navigate {
       }
 
       my $page_to_print;
-      if($self->can($method_step)) {
-        my $potential_page_to_print = $self->$method_step();
+      if($sub_ref = $self->can($method_step)) {
+        my $potential_page_to_print = &$sub_ref($self);
 
         # want to make this the page_to_print only if it a real page
         if($potential_page_to_print && !ref $potential_page_to_print && $potential_page_to_print !~ /^\d+$/) {
@@ -748,8 +756,8 @@ sub navigate {
     $self->history_push;
 
     ### a hook after
-    if( $self->can($method_post) ){
-      $return_val = $self->$method_post();
+    if($sub_ref = $self->can($method_post)) {
+      $return_val = &$sub_ref($self);
       if($return_val) {
         next;
       }
@@ -1080,13 +1088,14 @@ sub validate {
   my $return = 1;
 
   my $show_errors = 1;
-  if(!$self->page_was_just_printed($this_step)) {
+  if(!$self->page_was_just_printed($this_step) || !$self->fresh_form_info_exists($this_step)) {
     $show_errors = 0;
   }
 
+  my $sub_ref;
   my $method_pre_val = "$self->{this_step}{this_step}_pre_validate";
-  if($self->can($method_pre_val)) {
-    my $pre_val_return = $self->$method_pre_val($show_errors);
+  if($sub_ref = $self->can($method_pre_val)) {
+    my $pre_val_return = &$sub_ref($self, $show_errors);
     $self->hook_history_add({
       hook   => 'pre_val',
       could  => 'Y',
@@ -1136,8 +1145,8 @@ sub validate {
   }
   if($return) {
     my $method_post_val = "$self->{this_step}{this_step}_post_validate";
-    if($self->can($method_post_val)) {
-      my $post_val_return = $self->$method_post_val($show_errors);
+    if($sub_ref = $self->can($method_post_val)) {
+      my $post_val_return = &$sub_ref($self, $show_errors);
       $self->hook_history_add({
         hook   => 'post_val',
         could  => 'Y',
@@ -1290,7 +1299,7 @@ sub print {
   }
 
   $self->record_page_print;
-  $self->my_content_type;
+  $self->my_content_type($step);
   print $out ? $out : ${$self->out($step, $self->uber_form(\@_))};
 }
 
@@ -1353,9 +1362,13 @@ sub magic_fill_ref {
     $self->process(\$file, $self->magic_fill_interpolation_hash, \$out);
 
     while($out =~ /^(.+)$/mg) {
-      my ($keys, $value) = split /\s+/, $1, 2;
+      my $line = $1;
+      next if($line =~ /^\s*#/);
+      my ($keys, $value) = split /\s+/, $line, 2;
       foreach my $key (split /,/, $keys) {
-        $ref->{$key} = $value;
+        my $this_value = $value;
+        $this_value =~ s/\$key_name/$key/g;
+        $ref->{$key} = $this_value;
       }
     }
 
@@ -1390,6 +1403,7 @@ sub uber_form {
     $self->{uber_form}{fill}{$_} = $self->fill->{$_};
   }
   $self->{uber_form}{script_name} = $ENV{SCRIPT_NAME} || '';
+  $self->{uber_form}{path_info} = $ENV{PATH_INFO} || '';
   return $self->{uber_form};
 }
 
@@ -1415,7 +1429,7 @@ sub step_with_extension {
   my $step = shift;
   my $extension_type = shift;
   my $extension = $self->{"${extension_type}_extension"};
-  return ($step =~ /\.$extension$/) ? $step : "$step.$extension";
+  return ($step =~ /\.\w+$/) ? $step : "$step.$extension";
 }
 
 sub template {
@@ -1553,8 +1567,14 @@ sub URLEncode {
 }
 
 sub my_content_type {
+  my $self = shift;
+  my $step = shift;
   unless($ENV{CONTENT_TYPED}) {
-    print "Content-type: text/html\n\n";
+    if($step && $step =~ /\.xml/) {
+      print "Content-type: text/xml\n\n";
+    } else {
+      print "Content-type: text/html\n\n";
+    }
     $ENV{CONTENT_TYPED} = 1;
   }
 }

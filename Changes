@@ -1,5 +1,14 @@
 Revision history for Perl extension CGI-Path.
 
+1.10  Wed Mar 31 12:19:00 2004
+  - skip comments on conf reader
+  - using the code ref that can returns instead of just using it as a test
+  - don't want to add an extension on something that already has an extension
+  - printing xml content type for xml pages
+  - don't show errors unless fresh form info exists
+  - splitting on , for magic_fill stuff
+  - adding path_info to uber_form
+  - splitting on \0 for form values
 1.09  Wed Feb 12 11:49:00 2004
   - trying to account for abandoned sessions
 1.08  Mon Feb 09 14:27:00 2004
