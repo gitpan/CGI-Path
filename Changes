@@ -1,5 +1,7 @@
 Revision history for Perl extension CGI-Path.
 
+1.08  Mon Feb 09 14:27:00 2004
+  - get rid of Is
 1.07  Mon Feb 09 14:24:00 2004
   - trying to show history only if the browser supports document.open
   - changing to my_content_type to avoid renaming warnings

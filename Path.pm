@@ -5,10 +5,9 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.07";
+$VERSION = "1.08";
 
 use CGI;
-use Is;
 
 sub new {
   my $type  = shift;
