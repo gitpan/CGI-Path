@@ -1,5 +1,7 @@
 Revision history for Perl extension CGI-Path.
 
+1.09  Wed Feb 12 11:49:00 2004
+  - trying to account for abandoned sessions
 1.08  Mon Feb 09 14:27:00 2004
   - get rid of Is
 1.07  Mon Feb 09 14:24:00 2004
@@ -34,4 +36,3 @@ Revision history for Perl extension CGI-Path.
 1.00  Mon Oct 20 17:14:39 2003
 	- original version; created by h2xs 1.22 with options
 		-X -n CGI-Path
-

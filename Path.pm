@@ -5,7 +5,7 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.08";
+$VERSION = "1.09";
 
 use CGI;
 
@@ -110,17 +110,33 @@ sub DESTROY {
   my $self = shift;
 }
 
+sub new_session {
+  my $self = shift;
+  my ($sid, $session_dir, $session_lock_dir) = @_;
+  require Apache::Session::File;
+  $self->{session} = {};
+  tie %{$self->{session}}, 'Apache::Session::File', $sid, {
+    Directory     => $session_dir,
+    LockDirectory => $session_lock_dir,
+  };
+  $self->set_sid($self->{session}{_session_id});
+}
+
 sub session {
   my $self = shift;
   my $opt = shift;
   unless($self->{session}) {
-    require Apache::Session::File;
-    $self->{session} = {};
-    tie %{$self->{session}}, 'Apache::Session::File', $self->sid, {
-      Directory     => $self->session_dir,
-      LockDirectory => $self->session_lock_dir,
+    eval {
+      $self->new_session($self->sid, $self->session_dir, $self->session_lock_dir);
     };
-    $self->set_sid($self->{session}{_session_id});
+    if($@) {
+      if($@ =~ /Object does not exist/i) {
+        eval {
+          $self->new_session('', $self->session_dir, $self->session_lock_dir);
+        };
+      }
+    }
+    die $@ if($@);
   }
   if($opt) {
     my $opt_ref = ref $opt;
@@ -938,7 +954,7 @@ sub conf_read {
 sub page_name_helper {
   my $self = shift;
   my $base_page = shift || die "need a \$base_page for page_name_helper";
-  $base_page = "content/$base_page" unless($base_page =~ m@^(content|images|template)/@);
+  $base_page = "content/$base_page" unless($base_page =~ m@^(conf|content|images|template)/@);
   $base_page .= ".$self->{htm_extension}" unless($base_page =~ /\.\w+$/);
   return $base_page;
 }
