@@ -5,7 +5,7 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.02";
+$VERSION = "1.04";
 
 use CGI;
 
@@ -13,7 +13,11 @@ sub new {
   my $type  = shift;
   my %DEFAULT_ARGS = (
     allow_history         => 0,
-    #magic_fill_hash      => {},
+
+    allow_magic_fill      => 0,
+    allow_magic_micro     => 0,
+    magic_fill_filename   => '',
+
     form_name             => 'MYFORM',
     form_delete_pre_track => [],
     history_key           => 'history',
@@ -364,6 +368,18 @@ sub this_form {
   }
 }
 
+sub empty_form {
+  my $self = shift;
+  my $form = $self->form;
+  my $empty_form = 1;
+  foreach my $key (keys %{$form}) {
+    next if(grep { $_ eq $key } @{$self->{not_a_real_key}});
+    $empty_form = 0;
+    last;
+  }
+  return $empty_form;
+}
+
 sub form {
   my $self = shift;
   return $self->{form} || {};
@@ -445,13 +461,6 @@ sub hook_history_add {
   if($self->allow_history) {
     my $hash = shift || die "need a hook history hash";
     push @{$self->{_history}{hash}{hook}}, $hash;
-  }
-}
-
-sub magic_fill_hash_interpolation_hash {
-  return {
-    localtime => scalar localtime,
-    time      => time,
   }
 }
 
@@ -575,9 +584,9 @@ sub navigate {
 
       }
 
-      if(!($self->fill && keys %{$self->fill})) {
-        $self->add_to_fill($self->form);
+      if($info_exists) {
 
+        $self->add_to_fill($self->form, 'smart_merge');
         $self->hook_history_add({
           hook   => 'add_to_fill',
           could  => 'Y',
@@ -586,30 +595,26 @@ sub navigate {
 
       } else {
 
-        $self->hook_history_add({
-          hook   => 'add_to_fill',
-          could  => 'N',
-          return => undef,
-        });
-
-      }
-
-      if($self->{magic_fill_hash}) {
-        my $magic_fill_hash_interpolation_hash = $self->magic_fill_hash_interpolation_hash;
-        my $add_to_fill = {};
-        foreach my $key (keys %{$self->{magic_fill_hash}}) {
-          next if(exists $self->fill->{$key});
-          my $value = $self->{magic_fill_hash}{$key};
-          if($value =~ /\[\%/) {
-            my $tmp = '';
-            $self->template->process(\$value, $magic_fill_hash_interpolation_hash, \$tmp);
-            $value = $tmp;
+        if($self->allow_magic_fill) {
+          my $magic_fill_ref = $self->magic_fill_ref;
+          if(scalar keys %{$magic_fill_ref}) {
+            $self->add_to_fill($magic_fill_ref);
           }
-          $add_to_fill->{$key} = $value;
+
+          $self->hook_history_add({
+            hook   => 'magic_fill',
+            could  => 'Y',
+            return => undef,
+          });
+
+        } else {
+          $self->hook_history_add({
+            hook   => 'add_to_fill',
+            could  => 'N',
+            return => undef,
+          });
         }
-        if(scalar keys %{$add_to_fill}) {
-          $self->add_to_fill($add_to_fill);
-        }
+
       }
 
       my $hash_form;
@@ -726,11 +731,10 @@ sub generate_js_validation {
   return $val->generate_js($val_ref, $form_name);
 }
 
+### handle_jump_around aims to help keep things nice when a user goes back and resubmits a page
 sub handle_jump_around {
   my $self = shift;
 
-  warn "get handle_jump_around to work";
-  return;
   my $path = $self->get_path_array;
 
   foreach my $step (reverse @{$path}) {
@@ -742,14 +746,14 @@ sub handle_jump_around {
         if($self->page_has_displayed($page_to_come)) {
           my $cleared = 0;
           my $val_hash = $self->get_validate_ref($page_to_come);
-          warn "get WipeOnBack to work";
-          #foreach my $val_key (keys %{$val_hash}) {
-          #  next unless($val_hash->{$val_key} && ref $val_hash->{$val_key} && ref $val_hash->{$val_key} eq 'HASH');
-          #  if($val_hash->{$val_key}{WipeOnBack} && (! exists $self->this_form->{$val_key}) && exists $self->form->{$val_key}) {
-          #    $self->clear_value($val_key);
-          #    $cleared = 1;
-          #  }
-          #}
+
+          foreach my $val_key (keys %{$val_hash}) {
+            next unless($val_hash->{$val_key} && ref $val_hash->{$val_key} && ref $val_hash->{$val_key} eq 'HASH');
+            if($val_hash->{$val_key}{WipeOnBack} && (! exists $self->this_form->{$val_key}) && exists $self->form->{$val_key}) {
+              $self->clear_value($val_key);
+              $cleared = 1;
+            }
+          }
 
           if($cleared) {
             $save_validated .= delete $self->form->{_validated}{$page_to_come};
@@ -843,7 +847,8 @@ sub path_hash {
 
 sub my_path {
   my $self = shift;
-  return $self->{my_path};
+  $self->{my_path}{$self->my_content} ||= {};
+  return $self->{my_path}{$self->my_content};
 }
 
 sub my_path_step {
@@ -981,6 +986,7 @@ sub info_exists {
   foreach(@{$validating_keys}) {
     if(exists $form->{$_}) {
       $return = 1;
+      last;
     } 
   }
   return $return;
@@ -1090,7 +1096,7 @@ sub validate_proper {
   require CGI::Ex::Validate;
   my $errobj = CGI::Ex::Validate->new({
     as_hash_join   => "<BR>\n",
-    required_error => '[% error.$field_required_error %]',
+    required_error => '[% $field_required_error %]',
   })->validate($form, $val_ref);
   my $return = 0;
   if($errobj) {
@@ -1135,12 +1141,12 @@ sub add_my_error {
   }
 
   my $added = 0;
-  $self->{my_form}{error} ||= {};
+  $self->{my_form}{errors} ||= {};
 
   foreach my $key (keys %{$errors}) {
     next unless($errors->{$key});
     $added++;
-    $self->{my_form}{error}{$key} = $errors->{$key};
+    $self->{my_form}{errors}{$key} = $errors->{$key};
   }
 
   ### returns how many errors were added
@@ -1155,9 +1161,22 @@ sub fill {
 
 sub add_to_fill {
   my $self = shift;
+
   my $fill_to_add = shift;
+  my $smart_merge = shift;
+  
   foreach(keys %{$fill_to_add}) {
+    next if($smart_merge && exists $self->fill->{$_});
     $self->fill->{$_} = $fill_to_add->{$_};
+  }
+}
+
+sub preload {
+  my $self = shift;
+  foreach my $step (@{$self->{path_array}}) {
+    my $page = $self->page_name_helper($self->my_content . "/$step");
+    my $ref = $self->get_validate_ref($step);
+    $self->process($page, {});
   }
 }
 
@@ -1168,7 +1187,8 @@ sub out {
 
   $page = $self->page_name_helper($page);
   my $out = $self->process($page, $form);
-  $self->fill_in(\$out);
+  $out = \$out unless(ref $out);
+  $self->fill_in($out);
   return $out;
 }
 
@@ -1202,9 +1222,69 @@ sub fill_in {
   my $content = shift;
   die "need a scalar ref for \$content" unless($content && ref $content && ref $content eq 'SCALAR');
   my $hashref = shift || $self->fill;
+  if($self->{uber_form}{fill}) {
+    foreach(keys %{$self->{uber_form}{fill}}) {
+      $hashref->{$_} = $self->{uber_form}{fill}{$_};
+    }
+  }
   require CGI::Ex;
   my $cgix = CGI::Ex->new;
   $cgix->fill({text => $content, form => $hashref});
+}
+
+### magic fill methods
+
+sub allow_magic_fill {
+  my $self = shift;
+  return $self->{allow_magic_fill} ? 1 : 0;
+}
+
+sub magic_fill_interpolation_hash {
+  my $self = shift;
+
+  my ($script) = $0 =~ m@(?:.+/)?(.+)@;
+  my ($_script) = $script =~ m@.*_(.+)@;
+  $_script ||= $script;
+
+  my $hash = {
+    localtime => scalar (localtime),
+    script     => $script,
+    _script    => $_script,
+    time       => time,
+    %ENV,
+  };
+  if($self->{allow_magic_micro}) {
+    require Time::HiRes;
+    $hash->{micro} = join(".", &Time::HiRes::gettimeofday());
+    $hash->{micro_part} = (&Time::HiRes::gettimeofday())[1];
+  };
+  return $hash;
+}
+
+sub magic_fill_ref {
+  my $self = shift;
+
+  my $filename = shift || $self->{magic_fill_filename};
+
+  my $ref = {};
+
+  if(open(FILE, $filename)) {
+
+    my $file = join("", <FILE>);
+
+    my $out = '';
+    $self->process(\$file, $self->magic_fill_interpolation_hash, \$out);
+
+    while($out =~ /^(.+)$/mg) {
+      my ($keys, $value) = split /\s+/, $1, 2;
+      foreach my $key (split /,/, $keys) {
+        $ref->{$key} = $value;
+      }
+    }
+
+  }
+
+  return $ref;
 }
 
 sub uber_form {
@@ -1247,7 +1327,7 @@ sub process {
     $out = \$scalar;
   }
 
-  $self->template->process($step_filename, $form, $out) || die $self->template->error();
+  $self->template->process($step_filename, $form, $out) || die "Template error: " . $self->template->error();
   #my $return = '';
   #$self->template->process($out, $form, \$return) || die $self->template->error();
   return ref $out ? $out : \$out;
@@ -1524,42 +1604,104 @@ More specifically, the following methods can be called for a step, in the given 
 
 step                    details/possible uses
 ---------------------------------------------
-${step}_hook_pre        initializations, 
-                        must return 0 or step gets skipped
-info_exists             checks to see if you have info for this step
-${step}_info_complete   can be used to make sure you have all the info you need
+  ${step}_hook_pre        initializations, 
+                          must return 0 or step gets skipped
+  info_exists             checks to see if you have info for this step
+  ${step}_info_complete   can be used to make sure you have all the 
+                          info you need
 
-validate                contains the following
-${step}_pre_validate    stuff to check before validate proper
-validate_proper         runs the .val file validation
-${step}_post_validate   stuff to run after validate proper
+  validate                contains the following
+  ${step}_pre_validate    stuff to check before validate proper
+  validate_proper         runs the .val file validation
+  ${step}_post_validate   stuff to run after validate proper
 
-${step}_hash_fill       return a hash ref of things to add to $self->fill
-                        fill is a hash ref of what fills the forms
-${step}_hash_form       perhaps set stuff for $self->{my_form}
-                        my_form is a hash ref that gets passed to the process method
-${step}_hash_errors     set errors
-${step}_step            do actual stuff for the step
-${step}_hook_post       last chance
+  ${step}_hash_fill       return a hash ref of things to add to $self->fill
+                          fill is a hash ref of what fills the forms
+  ${step}_hash_form       perhaps set stuff for $self->{my_form}
+                          my_form is a hash ref that gets passed to the process method
+  ${step}_hash_errors     set errors
+  ${step}_step            do actual stuff for the step
+  ${step}_hook_post       last chance
 
 =head1 generate_form
 
 The goal is that the programmer just look at $self->form for form or session information.  
 To help facilitate this goal, I use the following
 
-$self->this_form           - form from the current hit
-$self->{session_only} = [] - things that get deleted from this_form and get inserted from the session
-$self->{session_wins} = [] - this_form wins by default, set this if you want something just from the session
+  $self->this_form           - form from the current hit
+  $self->{session_only} = [] - things that get deleted from this_form and get inserted from the session
+  $self->{session_wins} = [] - this_form wins by default, set this if you want something just from the session
 
 The code then sets the form with the following line
 
-$self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
+  $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
+
+=head1 magic_fill
+
+magic_fill is written to help aid in rapid development.  It is a simple, space-delimited file of key/value pairs, like so
+
+  address                       123 Fake Street
+  email,email_address,from      cpan@spack.net
+
+I split on the first white space, then split on commas for the key names.  In the above example, I would end up with a ref like this
+
+  {
+    address       => '123 Fake Street',
+    email         => 'cpan@spack.net',
+    email_address => 'cpan@spack.net',
+    from          => 'cpan@spack.net',
+  }
+
+Once I have a ref, those values will get filled into forms as pages are displayed.  Makes it nice to fill forms with dummy data and test the
+flow of your script.
+
+magic_fill is turned off by default.  The method allow_magic_fill determines if magic_fill is on.  By default allow_magic_fill just looks at
+$self->{allow_magic_fill} and returns true or false accordingly.  magic_fill_filename points to the location of your file.
+
+When you new up your CGI::Path object you just need to do something like the following
+
+my $self = CGI::Path->new({
+  allow_magic_fill      => 1,
+  magic_fill_filename   => "/path/to/magic_fill_file",
+});
+
+You can use variable values using the magic_fill_interpolation_hash.  By default you can use Template::Toolkit tags, like so
+
+currenttime            [% localtime %]
+
+Currently, the following are included by default in the magic_fill_interpolation_hash
+
+  script    - a good guess at the name of your script
+  _script   - the stuff after the last _ in the above script
+  localtime - scalar (localtime),
+  time      - time,
+
+I also include %ENV
+
+Two other keys are not available by default, based on micro seconds namely
+
+  micro      - join(".", &Time::HiRes::gettimeofday()), which really tries to get you a unique value
+  micro_part - (&Time::HiRes::gettimeofday())[1];, which is just the micro seconds
+
+To make these swaps available you need to set $self->{allow_magic_micro} to a true value.
 
 =head1 Session management
 
 CGI::Path uses Apache::Session::File by default for session management.  If you use this default you will need to write the following methods
 
-session_dir      - returns the directory where the session files will go
-session_lock_dir - returns the directory where the session lock files will go
+  session_dir      - returns the directory where the session files will go
+  session_lock_dir - returns the directory where the session lock files will go
+
+=head1 AUTHOR
+
+Copyright 2003-2004, Earl J. Cahill.  All rights reserved.
+
+This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+Address bug reports and comments to: cpan@spack.net.
+
+When sending bug reports, please provide the version of CGI::Path, the version of Perl, and the name and version of the operating
+system you are using.
+
 
 =cut

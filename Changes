@@ -1,5 +1,12 @@
 Revision history for Perl extension CGI-Path.
 
+1.04  Thu Jan 08 10:16:00 2004
+  - added magic_fill and trying to get it to work nicely with fill and form
+  - added a little perldoc about magic_fill
+  - handle_jump_around should make resubmitting  pages work a little better
+  - added preload method to try and be more mod_perl friendly
+  - errors moved to error
+  - getting ref stuff worked out on processing
 1.02  Tue Dec 16 13:00:00 2003
   - better create page functionality, allow for htm and val in object, CGI::Ex integration
 1.01  Wed Oct 22 10:54:50 2003

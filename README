@@ -100,26 +100,103 @@ navigate
     ${step}_info_complete can be used to make sure you have all the info you
     need
 
-    validate contains the following ${step}_pre_validate stuff to check
-    before validate proper validate_proper runs the .val file validation
-    ${step}_post_validate stuff to run after validate proper
+      validate                contains the following
+      ${step}_pre_validate    stuff to check before validate proper
+      validate_proper         runs the .val file validation
+      ${step}_post_validate   stuff to run after validate proper
 
-    ${step}_hash_fill return a hash ref of things to add to $self->fill fill
-    is a hash ref of what fills the forms ${step}_hash_form perhaps set
-    stuff for $self->{my_form} my_form is a hash ref that gets passed to the
-    process method ${step}_hash_errors set errors ${step}_step do actual
-    stuff for the step ${step}_hook_post last chance
+      ${step}_hash_fill       return a hash ref of things to add to $self->fill
+                              fill is a hash ref of what fills the forms
+      ${step}_hash_form       perhaps set stuff for $self->{my_form}
+                              my_form is a hash ref that gets passed to the process method
+      ${step}_hash_errors     set errors
+      ${step}_step            do actual stuff for the step
+      ${step}_hook_post       last chance
 
 generate_form
     The goal is that the programmer just look at $self->form for form or
     session information. To help facilitate this goal, I use the following
 
-    $self->this_form - form from the current hit $self->{session_only} = []
-    - things that get deleted from this_form and get inserted from the
-    session $self->{session_wins} = [] - this_form wins by default, set this
-    if you want something just from the session
+      $self->this_form           - form from the current hit
+      $self->{session_only} = [] - things that get deleted from this_form and get inserted from the session
+      $self->{session_wins} = [] - this_form wins by default, set this if you want something just from the session
 
     The code then sets the form with the following line
 
-    $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
+      $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
+
+magic_fill
+    magic_fill is written to help aid in rapid development. It is a simple,
+    space-delimited file of key/value pairs, like so
+
+      address                       123 Fake Street
+      email,email_address,from      cpan@spack.net
+
+    I split on the first white space, then split on commas for the key
+    names. In the above example, I would end up with a ref like this
+
+      {
+        address       => '123 Fake Street',
+        email         => 'cpan@spack.net',
+        email_address => 'cpan@spack.net',
+        from          => 'cpan@spack.net',
+      }
+
+    Once I have a ref, those values will get filled into forms as pages are
+    displayed. Makes it nice to fill forms with dummy data and test the flow
+    of your script.
+
+    magic_fill is turned off by default. The method allow_magic_fill
+    determines if magic_fill is on. By default allow_magic_fill just looks
+    at $self->{allow_magic_fill} and returns true or false accordingly.
+    magic_fill_filename points to the location of your file.
+
+    When you new up your CGI::Path object you just need to do something like
+    the following
+
+    my $self = CGI::Path->new({ allow_magic_fill => 1, magic_fill_filename
+    => "/path/to/magic_fill_file", });
+
+    You can use variable values using the magic_fill_interpolation_hash. By
+    default you can use Template::Toolkit tags, like so
+
+    currenttime [% localtime %]
+
+    Currently, the following are included by default in the
+    magic_fill_interpolation_hash
+
+      script    - a good guess at the name of your script
+      _script   - the stuff after the last _ in the above script
+      localtime - scalar (localtime),
+      time      - time,
+
+    I also include %ENV
+
+    Two other keys are not available by default, based on micro seconds
+    namely
+
+      micro      - join(".", &Time::HiRes::gettimeofday()), which really tries to get you a unique value
+      micro_part - (&Time::HiRes::gettimeofday())[1];, which is just the micro seconds
+
+    To make these swaps available you need to set $self->{allow_magic_micro}
+    to a true value.
+
+Session management
+    CGI::Path uses Apache::Session::File by default for session management.
+    If you use this default you will need to write the following methods
+
+      session_dir      - returns the directory where the session files will go
+      session_lock_dir - returns the directory where the session lock files will go
+
+AUTHOR
+    Copyright 2003-2004, Earl J. Cahill. All rights reserved.
+
+    This library is free software; you can redistribute it and/or modify it
+    under the same terms as Perl itself.
+
+    Address bug reports and comments to: cpan@spack.net.
+
+    When sending bug reports, please provide the version of CGI::Path, the
+    version of Perl, and the name and version of the operating system you
+    are using.
 
