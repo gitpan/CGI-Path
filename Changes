@@ -1,5 +1,9 @@
 Revision history for Perl extension CGI-Path.
 
+1.06  Tue Jan 27 12:41:00 2004
+  - getting handle_unvalidated_keys working
+  - adding a handle_unvalidated_keys and handle_jump_around to the perldoc
+  - adding _submit as a not_real_key
 1.05  Thu Jan 08 11:58:00 2004
   - working on the perldoc
 1.04  Thu Jan 08 10:16:00 2004

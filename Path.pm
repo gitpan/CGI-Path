@@ -5,7 +5,7 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.05";
+$VERSION = "1.06";
 
 use CGI;
 
@@ -42,7 +42,7 @@ sub new {
     my_path               => {},
 
     ### 'fake keys', stuff that gets skipped from the session
-    not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated)],
+    not_a_real_key        => [qw(_begin_time _printed_pages _session_id _validated _submit)],
 
     ### sort of a linked list of the path
     path_hash             => {
@@ -504,7 +504,6 @@ sub navigate {
 
   $self->history_init;
 
-  $self->get_unvalidated_keys;
   $self->handle_jump_around;
 
   my $previous_step = $form->{_printed_pages} && $form->{_printed_pages}[-1] ? $form->{_printed_pages}[-1] : '';
@@ -824,40 +823,43 @@ sub pages_after_page {
   return $return;
 }
 
-sub get_unvalidated_keys {
+sub get_real_keys {
   my $self = shift;
-  $self->{unvalidated_keys} = {%{$self->form}} || {};
+  my $real_keys = {%{$self->form}} || {};
   foreach(@{$self->{not_a_real_key}}) {
-    delete $self->{unvalidated_keys}{$_};
+    delete $real_keys->{$_};
   }
+  return $real_keys;
 }
 
 sub handle_unvalidated_keys {
   my $self = shift;
-  warn "get handle_unvalidated_keys working again";
-  return;
   my $path = $self->get_path_array;
 
   my $form = $self->form;
 
   my $validated = $form->{_validated} || {};
   my $mini_validated = {%$validated};
+  my $unvalidated_keys = $self->get_real_keys;
 
   foreach my $step (@$path){
-
-    last unless(keys %{$self->{unvalidated_keys}});
-    next if($mini_validated->{$step});
-
+    last unless(keys %{$unvalidated_keys});
     my $val_hash = $self->get_validate_ref($step);
+    if($mini_validated->{$step}) {
+      foreach (keys %{$val_hash}) {
+        delete $unvalidated_keys->{$_};
+      }
+      next;
+    }
 
     my $to_save = {};
-    foreach(keys %{$self->{unvalidated_keys}}) {
-      if($self->{unvalidated_keys}{$_} && $form->{$_} && !$val_hash->{$_ . "_error"}) {
+    foreach(keys %{$unvalidated_keys}) {
+      if($val_hash->{$_} && $unvalidated_keys->{$_} && $form->{$_} && !$val_hash->{$_ . "_error"}) {
         $to_save->{$_} = $form->{$_};
       }
     }
     if(keys %$to_save) {
-      $self->validate_unvalidated_keys($self->get_validate_ref($to_save));
+      $self->validate_unvalidated_keys($to_save);
       $self->session($to_save);
     }
   }
@@ -866,9 +868,10 @@ sub handle_unvalidated_keys {
 sub validate_unvalidated_keys {
   my $self = shift;
   my $validating_keys = shift;
+  my $unvalidated_keys = shift;
 
   foreach(@{$validating_keys}) {
-    delete $self->{unvalidated_keys}{$_};
+    delete $unvalidated_keys->{$_};
   }
 }
 
@@ -1048,19 +1051,19 @@ sub page_was_just_printed {
   my $self = shift;
   my $page = shift;
   return (
-    #Were we passed a page
+    # were we passed a page
     $page
      &&
-    #Do we have any record of printed_pages
+    # we have printed_pages
     ($self->form->{_printed_pages})
      &&
-    #Is that record an array
+    # we have an array
     (ref $self->form->{_printed_pages} eq 'ARRAY')
      &&
-    #Is there at least two items in this array
+    # we have a non empty array
     ( scalar @{$self->form->{_printed_pages}})
      &&
-    #Is the one before the current the page we were passed
+    # was $page the last entry
     $self->form->{_printed_pages}[-1] eq $page
   );
 }
@@ -1234,7 +1237,6 @@ sub print {
   my $step = shift;
 
   $self->handle_unvalidated_keys;
-
 
   my $out;
 
@@ -1794,6 +1796,26 @@ Here is a listing of some keys in the object, listed with default values.
 
   ### a history of bless'ings
   WASA                  => [],
+
+=head1 handle_jump_around
+
+handle_jump_around tries to handle when users jump around.  Like when they get to the third
+page, then jump back to the first page and resubmit something there.  handle_jump_around would
+hopefully figure out that the user just submitted the first page, so the path gets set back there.
+handle_jump_around then looks through the validation refs for subsequent pages and wipes all the keys
+that are marked with WipeOnBack.  This allows you to wipe enough keys so the pages will be redisplayed,
+but the user's information doesn't need to all get re-entered.  
+
+I have used keys such as enter_info_submitted, a hidden key on the enter_info page as a WipeOnBack key.  
+Then, if the user submits a page before enter_info, the enter_info_submitted key gets wiped and consequently 
+the enter_info page gets redisplayed, but with all the user's info still entered.
+
+=head1 handle_unvalidated_keys
+
+handle_unvalidated_keys looks through the generated form for keys that haven't yet been validated.  If
+handle_unvalidated_keys finds a key that is in a subsequent validation ref, it will save it.  This allows
+for bouncing into a cgi with all the information to get to say the receipt page, without show the all
+the pages.
 
 =head1 MULTIPLE PATHS
 
