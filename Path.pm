@@ -5,9 +5,10 @@ package CGI::Path;
 use strict;
 use vars qw($VERSION);
 
-$VERSION = "1.10";
+$VERSION = "1.11";
 
 use CGI;
+use Is;
 
 sub new {
   my $type  = shift;
@@ -29,6 +30,7 @@ sub new {
 
     ### form_name is used for javascript
     form_name             => 'MYFORM',
+    form_keyname          => 'form',
 
     ### extension for htm files
     htm_extension         => 'htm',
@@ -396,8 +398,8 @@ sub generate_form {
   }
 
   # lay the hashes on top of each other in reverse order of precedence
-  $self->{form} = {%{$self->session}, %{$this_form}, %{$form}};
-  if($self->{form}{session_wipe}) {
+  $self->form({%{$self->session}, %{$this_form}, %{$form}});
+  if($self->form->{session_wipe}) {
     $self->session_wipe;
     $self->clear_value('session_wipe');
   }
@@ -430,7 +432,8 @@ sub empty_form {
 
 sub form {
   my $self = shift;
-  return $self->{form} || {};
+  $self->{$self->{form_keyname}} = shift if($#_ != -1);
+  return $self->{$self->{form_keyname}} ||= {};
 }
 
 ### history methods
@@ -570,7 +573,6 @@ sub navigate {
         return => $return_val,
       });
       unless($return_val) {
-
         $self->hook_history_add({
           hook   => $method_pre,
           could  => 'Y',
@@ -1206,7 +1208,7 @@ sub save_value {
     foreach my $key (keys %{$name}) {
       $self->form->{$key} = $name->{$key};
     }
-    $self->session->save($name);
+    $self->session($name);
   }
 }
 
@@ -1429,6 +1431,7 @@ sub step_with_extension {
   my $step = shift;
   my $extension_type = shift;
   my $extension = $self->{"${extension_type}_extension"};
+
   return ($step =~ /\.\w+$/) ? $step : "$step.$extension";
 }
 
@@ -1514,7 +1517,7 @@ HEADER
     <TD><INPUT NAME='[% hash.name %]'></TD>
   </TR>
 [% END %]
-  <TR><TD><INPUT TYPE=submit NAME=next VALUE=next></TD></TR>
+  <TR><TD><INPUT TYPE=submit NAME=_submit VALUE=next></TD></TR>
 FORM
   $self->{create_page}{form_close} ||= "</FORM>";
   $self->{create_page}{table_close} ||= "</TABLE>";
